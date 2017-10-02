@@ -1,0 +1,130 @@
+---
+title: "Prediction Assignnment Writeup"
+author: "Marie Silvestre"
+date: "21 septembre 2017"
+output: html_document
+---
+
+#Load data and packages, & create data partition out of the training set:
+
+```{r data setup, echo=TRUE, message = F , warning=F}
+#Load relevant packages
+library(caret)
+library(knitr)
+#Load the training and test sets in variable
+setwd("/Users/marie/Desktop/Data Science/Machine Learning")
+train<-read.csv("pml-training.csv",header=TRUE,sep=",")
+test<-read.csv("pml-testing.csv",header=TRUE,sep=",")
+#Create a training set and a test set out of the train data
+inTrain<-createDataPartition(y=train$classe,p=0.8,list=FALSE)
+training<-train[inTrain,]
+testing<-train[-inTrain,]
+```
+
+# Data processing
+##Dimensionnality Reduction
+###NAs count and suppression:
+First we will change all the factors columns to numeric. Then, we look at the number of NAs in each column and we see that several columns have more than 15000 numbers of NAs (for a total of 15699 obs). We take out those variables from the training and testing data sets.
+```{r preprocessing nas, echo=TRUE, message = F, warning=F}
+#Store column names that are factor
+col_name_fact<- colnames(training[,sapply(training, is.factor)])
+#we remove the first 3 and the last one which we want to keep as factors
+col_name_fact<-col_name_fact[4:36]
+#change factor columns to numeric in training and testing data sets
+training[,col_name_fact]<-lapply(training[,col_name_fact],function(x) as.numeric(as.character(x)))
+testing[,col_name_fact]<-lapply(testing[,col_name_fact],function(x) as.numeric(as.character(x)))
+#Count numbers of nas in each column
+na_count<-apply(training, 2, function(x) (sum(is.na(x))))
+na_count<-subset(na_count,na_count!=0)
+na_count<-data.frame(na_count)
+na_count$names<-rownames(na_count)
+head(na_count)
+#Remove columns with NAs
+training<-subset(training,select=colMeans(is.na(training))==0)
+testing<-subset(testing,select=colMeans(is.na(testing))==0)
+```
+We now have only 60 variables left.
+
+###Low Variance:
+We will look at the standard deviation from each variable and eliminate low variance variables.
+
+```{r preprocessing sd, echo=TRUE}
+#Calculate variance for each remaining variable in the training set (only for columns 7 to 59)
+sd_train<-apply(training[,7:59],2,sd)
+hist(sd_train, breaks=10)
+```
+
+We see that there is a majority of variable with sd < 50 whereas some variables have a sd that goes all the way up to 500, so we will suppress all variables with a standard deviation under 50.
+
+```{r preprocessing sd2, echo=TRUE}
+#Isolate columns with a standard deviation under 50
+sd_inf<-sd_train[sd_train < 50]
+col_name_sd_inf<-names(sd_inf)
+#We remove the columns with a standard deviation < 50 from the training and testing data sets
+training<-training[,-which(names(training) %in% col_name_sd_inf)]
+testing<-testing[,-which(names(testing) %in% col_name_sd_inf)]
+```
+
+We now have 37 variables for the training and testing data sets.
+
+##High correlation
+We will look at the correlation between variables and reduce dimensionnality with the PCA.
+```{r preprocessing_cor, echo=TRUE}
+#Change integer columns to numeric
+training[,7:36]<-lapply(training[,7:36],as.numeric)
+testing[,7:36]<-lapply(testing[,7:36],as.numeric)
+#Find the correlation between predictors
+m<-abs(cor(training[,7:36]))
+diag(m)<-0
+which(m>0.8,arr.ind = TRUE)
+```
+We see a high correlation between several variables. So we can preprocess with PCA and fit the model with the train() function. We will include thresh = 0.85, to keep all the principal component that explain at least 85% of the variance.
+
+##Build Model and cross validation
+
+Since the data is non linear and multi class we will evaluate 4 different algorithms and use the metric "Accuracy" to compare models.
+
+- Classification and regression trees
+- Random Forest
+- k nearest neighbors
+- Linear Discriminant Analysis
+We wont try SVM since it is better suited to two-class classification problems.
+
+```{r preprocessing_pca, echo=TRUE, message = F, warning=F}
+#We don't need the first 6 variables (name, time...)
+training<-training[,7:37]
+testing<-testing[,7:37]
+training$classe<-as.character(training$classe)
+testing$classe<-as.character(testing$classe)
+#Preprocess with PCA
+preProc<-preProcess(training,method="pca",thresh = 0.85)
+trainPC<-predict(preProc,training)
+#Let us fit our four models: decision tree, random forest, knn and linear discriminant
+modelFit_rpart<-train(classe~.,method="rpart",data=trainPC)
+modelFit_rf<-train(classe~.,method="rf",data=trainPC)
+modelFit_knn<-train(classe~.,method="knn",data=trainPC)
+modelFit_lda<-train(classe~.,method="lda",data=trainPC)
+#test the models on our testing set
+testPC<-predict(preProc,testing)
+#And stock the accuracy results in variables
+RP<-confusionMatrix(testing$class,predict(modelFit_rpart,testPC))$overall['Accuracy']
+RF<-confusionMatrix(testing$class,predict(modelFit_rf,testPC))$overall['Accuracy']
+KN<-confusionMatrix(testing$class,predict(modelFit_knn,testPC))$overall['Accuracy']
+LDA<-confusionMatrix(testing$class,predict(modelFit_lda,testPC))$overall['Accuracy']
+```
+Let us see the different accuracies for each model:
+```{r data frame, echo=TRUE}
+#We stock our result in a data frame and print them
+acc_res<-data.frame(c(RP,RF,KN,LDA),row.names = c("Decision tree","Random Forest","K nearest neighbors","LDA"))
+print(acc_res)
+```
+The Random forest results yields the best accuracy with 96%
+
+We select the Random Forest model as our best model.
+
+#Predict from testing set
+```{r model final, echo=TRUE}
+testfin<-predict(preProc,test)
+reponse<-predict(modelFit_rf,testfin)
+reponse
+```
